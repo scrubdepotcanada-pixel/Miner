@@ -40,9 +40,21 @@ export class GameScene extends Phaser.Scene {
   private playerDeathHandled = false;
   private levelCompleted = false;
 
-  // Falling bag tracking
-  private fallingBags: Array<{ col: number; row: number; timer: number }> = [];
-  private readonly FALL_STEP_MS = 120;
+  // Bags in flight (detached from the tile grid while falling)
+  private fallingBags: Array<{
+    rect: Phaser.GameObjects.Rectangle;
+    label: Phaser.GameObjects.Text;
+    col: number;
+    row: number;
+    timer: number;
+  }> = [];
+  private readonly FALL_STEP_MS = 110;
+  private readonly JIGGLE_MS = 2000; // warning wobble before a bag drops
+
+  // '$' labels for stationary bag tiles, keyed by "col,row"
+  private bagLabels: Map<string, Phaser.GameObjects.Text> = new Map();
+  // Active jiggle animations, keyed by "col,row"
+  private jiggleData: Map<string, { tween: Phaser.Tweens.Tween; timer: Phaser.Time.TimerEvent }> = new Map();
 
   constructor() {
     super({ key: 'GameScene' });
@@ -57,6 +69,8 @@ export class GameScene extends Phaser.Scene {
     this.playerDeathHandled = false;
     this.levelCompleted = false;
     this.fallingBags = [];
+    this.bagLabels = new Map();
+    this.jiggleData = new Map();
     this.enemies = [];
     this.tileSprites = [];
   }
@@ -95,9 +109,9 @@ export class GameScene extends Phaser.Scene {
         if (type === TileType.GEM) {
           this.add.rectangle(px, py, 12, 12, 0xFFFFFF, 0.3).setDepth(1);
         }
-        // Bag label
+        // Bag label (tracked so it can move/clear as bags fall or are scooped)
         if (type === TileType.BAG) {
-          this.add.text(px - 5, py - 7, '$', { fontSize: '14px', color: '#000', fontFamily: 'monospace' }).setDepth(1);
+          this.syncBagLabel(c, r);
         }
         // Grid lines for DIRT
         if (type === TileType.DIRT) {
@@ -133,6 +147,7 @@ export class GameScene extends Phaser.Scene {
     this.player = new Player(this, startCol, startRow, this.tileMap, {
       onDig: (c, r) => this.onDig(c, r),
       onGemCollect: (c, r, pts) => this.onGemCollect(c, r, pts),
+      onBagScoop: (c, r) => this.onBagScoop(c, r),
       onDeath: () => this.onPlayerDeath(),
       onCheckLevelComplete: () => this.checkLevelComplete(),
     });
@@ -222,16 +237,89 @@ export class GameScene extends Phaser.Scene {
     if (!ts) return;
     ts.type = type;
     ts.rect.setFillStyle(tileColor(type));
+    this.syncBagLabel(col, row);
+  }
+
+  /** Ensure the '$' label presence at a tile matches whether it holds a BAG. */
+  private syncBagLabel(col: number, row: number): void {
+    const key = `${col},${row}`;
+    const isBag = this.tileMap.get(col, row) === TileType.BAG;
+    const existing = this.bagLabels.get(key);
+    if (isBag && !existing) {
+      const px = col * TILE_SIZE + TILE_SIZE / 2;
+      const py = row * TILE_SIZE + TILE_SIZE / 2;
+      const label = this.add.text(px - 5, py - 7, '$', {
+        fontSize: '14px', color: '#000', fontFamily: 'monospace',
+      }).setDepth(2);
+      this.bagLabels.set(key, label);
+    } else if (!isBag && existing) {
+      existing.destroy();
+      this.bagLabels.delete(key);
+    }
   }
 
   private checkBagGravity(col: number, row: number): void {
-    // Check if the tile directly above is a BAG
+    // If the tile directly above is a BAG that just lost its support, jiggle it.
     const aboveRow = row - 1;
     if (aboveRow >= 0 && this.tileMap.get(col, aboveRow) === TileType.BAG) {
-      this.tileMap.set(col, aboveRow, TileType.EMPTY);
-      this.refreshTile(col, aboveRow);
-      this.fallingBags.push({ col, row: aboveRow, timer: 0 });
+      this.startJiggle(col, aboveRow);
     }
+  }
+
+  /** Wobble a bag in place for JIGGLE_MS as a warning, then let it fall. */
+  private startJiggle(col: number, row: number): void {
+    const key = `${col},${row}`;
+    if (this.jiggleData.has(key)) return; // already jiggling
+
+    const ts = this.tileSprites[row]?.[col];
+    const label = this.bagLabels.get(key);
+    const targets = [ts?.rect, label].filter(Boolean) as Phaser.GameObjects.GameObject[];
+
+    const tween = this.tweens.add({
+      targets,
+      angle: { from: -7, to: 7 },
+      duration: 70,
+      yoyo: true,
+      repeat: -1,
+    });
+
+    const timer = this.time.delayedCall(this.JIGGLE_MS, () => {
+      this.stopJiggle(col, row);
+      this.beginFall(col, row);
+    });
+
+    this.jiggleData.set(key, { tween, timer });
+  }
+
+  /** Cancel a bag's jiggle animation and reset its angle. */
+  private stopJiggle(col: number, row: number): void {
+    const key = `${col},${row}`;
+    const data = this.jiggleData.get(key);
+    if (!data) return;
+    data.tween.stop();
+    data.timer.remove(false);
+    this.jiggleData.delete(key);
+
+    const ts = this.tileSprites[row]?.[col];
+    if (ts) ts.rect.setAngle(0);
+    const label = this.bagLabels.get(key);
+    if (label) label.setAngle(0);
+  }
+
+  /** Detach a settled BAG from the grid and start it falling. */
+  private beginFall(col: number, row: number): void {
+    if (this.tileMap.get(col, row) !== TileType.BAG) return; // scooped/changed meanwhile
+
+    this.tileMap.set(col, row, TileType.EMPTY);
+    this.refreshTile(col, row); // clears the gold tile + its label
+
+    const px = col * TILE_SIZE + TILE_SIZE / 2;
+    const py = row * TILE_SIZE + TILE_SIZE / 2;
+    const rect = this.add.rectangle(px, py, TILE_SIZE - 4, TILE_SIZE - 4, COLOR_BAG).setDepth(7);
+    const label = this.add.text(px - 5, py - 7, '$', {
+      fontSize: '14px', color: '#000', fontFamily: 'monospace',
+    }).setDepth(8);
+    this.fallingBags.push({ rect, label, col, row, timer: 0 });
   }
 
   private stepFallingBags(delta: number): void {
@@ -246,51 +334,64 @@ export class GameScene extends Phaser.Scene {
       const nextRow = bag.row + 1;
       const below = this.tileMap.get(bag.col, nextRow);
 
-      // Animate: show bag at current position
-      this.refreshTile(bag.col, bag.row);
-
       if (below === TileType.EMPTY || below === TileType.SPAWN) {
+        // Move down one tile and check what it crushes on the way.
         bag.row = nextRow;
-        // Draw bag sprite temporarily
-        this.tileMap.set(bag.col, bag.row, TileType.BAG);
-        this.refreshTile(bag.col, bag.row);
-        this.tileMap.set(bag.col, bag.row, TileType.EMPTY); // logically empty while falling
+        const px = bag.col * TILE_SIZE + TILE_SIZE / 2;
+        const py = bag.row * TILE_SIZE + TILE_SIZE / 2;
+        bag.rect.setPosition(px, py);
+        bag.label.setPosition(px - 5, py - 7);
+        this.crushAt(bag.col, bag.row);
       } else {
-        // Settled
+        // Settle: become a stationary BAG tile that can be scooped for money.
         this.tileMap.set(bag.col, bag.row, TileType.BAG);
         this.refreshTile(bag.col, bag.row);
-
-        // Check if player is here
-        if (this.player.col === bag.col && this.player.row === bag.row) {
-          this.player.kill();
-        }
-
-        // Check if any enemy is here
-        for (const e of this.enemies) {
-          if (e.alive && e.col === bag.col && e.row === bag.row) {
-            e.kill();
-            this.scoreManager.add(SCORE_BAG_CRUSH);
-            this.updateHUD();
-          }
-        }
-
-        // Chain: check bag above the just-settled position
-        this.checkBagGravity(bag.col, bag.row);
-        // Collect bag if player walks into it — handled via player movement
-        // Award bag value
-        this.scoreManager.add(SCORE_MONEY_BAG);
-        this.updateHUD();
-
+        bag.rect.destroy();
+        bag.label.destroy();
         toRemove.push(i);
 
-        // Screen shake
-        this.cameras.main.shake(120, 0.005);
+        this.crushAt(bag.col, bag.row);          // catch anything in the resting tile
+        this.checkBagGravity(bag.col, bag.row);  // chain: support for a bag above?
+        this.cameras.main.shake(120, 0.006);
       }
     }
 
     for (let i = toRemove.length - 1; i >= 0; i--) {
       this.fallingBags.splice(toRemove[i], 1);
     }
+  }
+
+  /** Resolve a falling bag entering a tile: kill the player, crush enemies. */
+  private crushAt(col: number, row: number): void {
+    if (this.player.alive && this.player.col === col && this.player.row === row) {
+      this.player.kill();
+    }
+    for (const e of this.enemies) {
+      if (e.alive && e.col === col && e.row === row) {
+        e.kill();
+        this.scoreManager.add(SCORE_BAG_CRUSH);
+        this.updateHUD();
+      }
+    }
+  }
+
+  /** Player walked into a stationary bag — scoop it for money. */
+  private onBagScoop(col: number, row: number): void {
+    this.stopJiggle(col, row);     // in case it was mid-jiggle
+    this.refreshTile(col, row);    // tile is already EMPTY; clears gold + label
+    this.scoreManager.add(SCORE_MONEY_BAG);
+    this.updateHUD();
+
+    const px = col * TILE_SIZE + TILE_SIZE / 2;
+    const py = row * TILE_SIZE + TILE_SIZE / 2;
+    const popup = this.add.text(px, py, `+${SCORE_MONEY_BAG}`, {
+      fontSize: '14px', color: '#FFdd00', fontFamily: 'monospace',
+      stroke: '#000', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(20);
+    this.tweens.add({
+      targets: popup, y: py - 24, alpha: 0, duration: 600,
+      onComplete: () => popup.destroy(),
+    });
   }
 
   private checkEnemyCollisions(): void {

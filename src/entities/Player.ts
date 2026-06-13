@@ -8,6 +8,7 @@ export type Direction = 'left' | 'right' | 'up' | 'down';
 export interface PlayerEvents {
   onDig: (col: number, row: number) => void;
   onGemCollect: (col: number, row: number, points: number) => void;
+  onBagScoop: (col: number, row: number) => void;
   onDeath: () => void;
   onCheckLevelComplete: () => void;
 }
@@ -93,18 +94,12 @@ export class Player {
         this.col = nc;
         this.row = nr;
       } else if (tile === TileType.BAG) {
-        // Try push bag horizontally
-        if (dr === 0) {
-          const bagDestC = nc + dc;
-          const bagDest = this.map.get(bagDestC, nr);
-          if (bagDest === TileType.EMPTY || bagDest === TileType.SPAWN) {
-            this.map.set(nc, nr, TileType.EMPTY);
-            this.map.set(bagDestC, nr, TileType.BAG);
-            this.col = nc;
-            this.row = nr;
-          }
-        }
-        break; // can't drill through bags
+        // Scoop a stationary bag for money — walk into it and collect.
+        this.map.set(nc, nr, TileType.EMPTY);
+        this.col = nc;
+        this.row = nr;
+        this.events.onBagScoop(nc, nr);
+        break; // one bag per move; can't drill past it
       } else {
         break;
       }
