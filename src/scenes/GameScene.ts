@@ -86,6 +86,7 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor('#111111');
     this.tileMap = new TileMap(GRID_COLS, GRID_ROWS);
     this.tileMap.loadFromArray(this.levelConfig.gridData);
+    this.carvePreDugTunnels();
 
     this.buildTileSprites();
     this.countGems();
@@ -134,6 +135,43 @@ export class GameScene extends Phaser.Scene {
     for (let r = 0; r < GRID_ROWS; r++)
       for (let c = 0; c < GRID_COLS; c++)
         if (this.tileMap.get(c, r) === TileType.GEM) this.totalGems++;
+  }
+
+  /**
+   * Pre-dig a starter tunnel network so enemies can begin pathfinding to the
+   * digger immediately instead of being stuck in a dirt corner. Carves:
+   *   1) a horizontal corridor along the spawn row connecting all spawns,
+   *   2) a vertical shaft through a mid column for chase variety.
+   * Only DIRT becomes EMPTY — rocks, gems, bags, and borders are preserved,
+   * and a tile won't be carved if removing it would unsupport a resting bag.
+   */
+  private carvePreDugTunnels(): void {
+    const spawns: Array<{ col: number; row: number }> = [];
+    for (let r = 0; r < GRID_ROWS; r++)
+      for (let c = 0; c < GRID_COLS; c++)
+        if (this.tileMap.get(c, r) === TileType.SPAWN)
+          spawns.push({ col: c, row: r });
+    if (spawns.length === 0) return;
+
+    // 1) Spawn-row corridor: clear dirt between leftmost and rightmost spawn.
+    if (spawns.length >= 2) {
+      const sorted = [...spawns].sort((a, b) => a.col - b.col);
+      const corridorRow = sorted[0].row;
+      const minCol = sorted[0].col;
+      const maxCol = sorted[sorted.length - 1].col;
+      for (let c = minCol + 1; c < maxCol; c++) this.carveTunnelTile(c, corridorRow);
+    }
+
+    // 2) Vertical mid-column shaft, leaving a couple of rows of headroom.
+    const midCol = Math.floor(GRID_COLS / 2);
+    for (let r = 3; r < GRID_ROWS - 3; r++) this.carveTunnelTile(midCol, r);
+  }
+
+  private carveTunnelTile(col: number, row: number): void {
+    if (this.tileMap.get(col, row) !== TileType.DIRT) return;
+    // Don't pull the floor out from under a resting bag at load time.
+    if (this.tileMap.get(col, row - 1) === TileType.BAG) return;
+    this.tileMap.set(col, row, TileType.EMPTY);
   }
 
   private spawnPlayer(): void {
