@@ -12,6 +12,8 @@ export class DiggerEnemy extends Enemy {
   constructor(scene: Phaser.Scene, col: number, row: number, map: TileMap) {
     super(scene, col, row, map, 0xAA00FF);
     this.moveInterval = 500;
+    this.pathTimer = this.PATH_INTERVAL;
+    this.moveTimer = this.moveInterval;
   }
 
   update(delta: number, playerCol: number, playerRow: number): void {

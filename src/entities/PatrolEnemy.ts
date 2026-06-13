@@ -12,6 +12,7 @@ export class PatrolEnemy extends Enemy {
     this.dirC = dirC;
     this.dirR = dirR;
     this.moveInterval = 450;
+    this.moveTimer = this.moveInterval; // step on first update tick
   }
 
   update(delta: number, _playerCol: number, _playerRow: number): void {

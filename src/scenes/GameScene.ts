@@ -162,20 +162,29 @@ export class GameScene extends Phaser.Scene {
     if (spawns.length === 0) return;
 
     // Player gets the first spawn; the rest are enemy roots.
+    const playerSpawn = spawns[0];
     const enemySpawns = spawns.length > 1 ? spawns.slice(1) : spawns;
 
     for (const root of enemySpawns) {
-      // Aim for ~25–45 carved tiles per enemy, randomised each level.
-      const target = 25 + Math.floor(Math.random() * 21);
-      this.randomWalkCarve(root.col, root.row, target);
+      // Aim for ~45–70 carved tiles per enemy, biased toward the player so
+      // the bad guy's tunnel network reliably reaches the digger.
+      const target = 45 + Math.floor(Math.random() * 26);
+      this.randomWalkCarve(root.col, root.row, target, playerSpawn.col, playerSpawn.row);
     }
   }
 
-  /** Drunkard's-walk carve: grows a connected tunnel pocket from (col,row). */
-  private randomWalkCarve(startCol: number, startRow: number, target: number): void {
-    const DIRS: Array<[number, number]> = [[0, -1], [0, 1], [-1, 0], [1, 0]];
-    // Frontier = positions adjacent to dirt we might still carve from. The
-    // spawn itself becomes EMPTY when the enemy spawns, so we seed with it.
+  /**
+   * Drunkard's-walk carve: grows a connected tunnel pocket from (col,row).
+   * If bias coords are given, the walker preferentially steps toward them so
+   * the network reaches that area instead of meandering in a bubble.
+   */
+  private randomWalkCarve(
+    startCol: number,
+    startRow: number,
+    target: number,
+    biasCol?: number,
+    biasRow?: number,
+  ): void {
     const frontier: Array<{ col: number; row: number }> = [{ col: startCol, row: startRow }];
     let carved = 0;
 
@@ -187,7 +196,7 @@ export class GameScene extends Phaser.Scene {
         : Math.floor(Math.random() * frontier.length);
       const pos = frontier[idx];
 
-      const dirs = this.shuffled(DIRS);
+      const dirs = this.dirsTowardBias(pos.col, pos.row, biasCol, biasRow);
       let stepped = false;
       for (const [dc, dr] of dirs) {
         const nc = pos.col + dc;
@@ -204,6 +213,33 @@ export class GameScene extends Phaser.Scene {
         frontier.splice(idx, 1);
       }
     }
+  }
+
+  /**
+   * Returns the four cardinal directions in an order biased toward (biasCol,
+   * biasRow). 60% of the time the directions are sorted greedily (closer to
+   * target first); 40% of the time they are shuffled. With no bias coords,
+   * always shuffled. Keeps the network exploratory while pulling it home.
+   */
+  private dirsTowardBias(
+    fromCol: number,
+    fromRow: number,
+    biasCol?: number,
+    biasRow?: number,
+  ): Array<[number, number]> {
+    const DIRS: Array<[number, number]> = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    if (biasCol === undefined || biasRow === undefined) return this.shuffled(DIRS);
+
+    const scored = DIRS.map(([dc, dr]) => ({
+      dir: [dc, dr] as [number, number],
+      dist: Math.abs(fromCol + dc - biasCol) + Math.abs(fromRow + dr - biasRow),
+    }));
+    if (Math.random() < 0.6) {
+      scored.sort((a, b) => a.dist - b.dist);
+    } else {
+      scored.sort(() => Math.random() - 0.5);
+    }
+    return scored.map(s => s.dir);
   }
 
   /**
@@ -515,25 +551,25 @@ export class GameScene extends Phaser.Scene {
     const py = row * TILE_SIZE + TILE_SIZE / 2;
 
     // --- Layered core: white-hot square, yellow ring, orange halo ---
-    const whiteHot = this.add.rectangle(px, py, 16, 16, 0xfff9d0, 1).setDepth(28);
+    const whiteHot = this.add.rectangle(px, py, 20, 20, 0xfff9d0, 1).setDepth(28);
     this.tweens.add({
       targets: whiteHot,
-      scaleX: 2.4, scaleY: 2.4, alpha: 0,
-      duration: 320, ease: 'Quad.easeOut',
+      scaleX: 2.6, scaleY: 2.6, alpha: 0,
+      duration: 360, ease: 'Quad.easeOut',
       onComplete: () => whiteHot.destroy(),
     });
-    const yellow = this.add.circle(px, py, 12, 0xffd233, 1).setDepth(27);
+    const yellow = this.add.circle(px, py, 14, 0xffd233, 1).setDepth(27);
     this.tweens.add({
       targets: yellow,
-      scale: 3.2, alpha: 0,
-      duration: 440, ease: 'Quad.easeOut',
+      scale: 3.6, alpha: 0,
+      duration: 480, ease: 'Quad.easeOut',
       onComplete: () => yellow.destroy(),
     });
-    const orange = this.add.circle(px, py, 9, 0xff7722, 0.9).setDepth(26);
+    const orange = this.add.circle(px, py, 10, 0xff7722, 0.9).setDepth(26);
     this.tweens.add({
       targets: orange,
-      scale: 4.2, alpha: 0,
-      duration: 540, ease: 'Quad.easeOut',
+      scale: 4.6, alpha: 0,
+      duration: 580, ease: 'Quad.easeOut',
       onComplete: () => orange.destroy(),
     });
 
@@ -580,21 +616,21 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
-    // --- Grey/cream smoke clouds, biased upward and outward ---
-    const SMOKE = [0xe0dccf, 0xc5bfae, 0xa9a294, 0x807a6a];
-    for (let i = 0; i < 14; i++) {
+    // --- Grey/cream smoke clouds, biased upward and outward (chunky field) ---
+    const SMOKE = [0xe0dccf, 0xc5bfae, 0xa9a294, 0x807a6a, 0xdcd5c4];
+    for (let i = 0; i < 20; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const dist = 12 + Math.random() * 28;
+      const dist = 14 + Math.random() * 34;
       const color = SMOKE[Math.floor(Math.random() * SMOKE.length)];
-      const size = 5 + Math.floor(Math.random() * 4);
+      const size = 6 + Math.floor(Math.random() * 5);
       const puff = this.add.rectangle(px, py, size, size, color, 0.85).setDepth(25);
       this.tweens.add({
         targets: puff,
-        x: px + Math.cos(angle) * dist + (Math.random() - 0.5) * 8,
-        y: py + Math.sin(angle) * dist - 16 - Math.random() * 12, // drift up
-        scaleX: 1.7, scaleY: 1.7,
+        x: px + Math.cos(angle) * dist + (Math.random() - 0.5) * 10,
+        y: py + Math.sin(angle) * dist - 18 - Math.random() * 14, // drift up
+        scaleX: 1.8, scaleY: 1.8,
         alpha: 0,
-        duration: 720 + Math.random() * 240,
+        duration: 780 + Math.random() * 260,
         ease: 'Quad.easeOut',
         onComplete: () => puff.destroy(),
       });

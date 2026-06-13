@@ -11,6 +11,11 @@ export class ChaserEnemy extends Enemy {
   constructor(scene: Phaser.Scene, col: number, row: number, map: TileMap) {
     super(scene, col, row, map, 0xFF2222);
     this.moveInterval = 350;
+    // Pre-arm both timers so the very first update tick computes a path AND
+    // takes a step — otherwise the chaser idles for up to ~850ms after the
+    // player's first move.
+    this.pathTimer = this.PATH_INTERVAL;
+    this.moveTimer = this.moveInterval;
   }
 
   update(delta: number, playerCol: number, playerRow: number): void {
