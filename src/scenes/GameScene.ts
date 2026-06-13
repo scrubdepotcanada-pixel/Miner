@@ -505,73 +505,102 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Procedural explosion VFX at a tile — bright flash, debris bits, smoke
-   * cloud. Placeholder until the proper spritesheet is wired in; intended
-   * for enemies crushed by bags (and reusable for the digger's death).
+   * Procedural explosion VFX tuned to match the chunky pixel reference art:
+   * a bright white-hot core, golden fire flecks, brown/amber debris cubes
+   * flung outward with rotation, and grey-cream smoke clouds drifting up.
+   * Placeholder until the spritesheet is wired in; reusable for the digger.
    */
   private explodeAt(col: number, row: number): void {
     const px = col * TILE_SIZE + TILE_SIZE / 2;
     const py = row * TILE_SIZE + TILE_SIZE / 2;
 
-    // Central flash
-    const flash = this.add.circle(px, py, 10, 0xfff2a8, 1).setDepth(25);
+    // --- Layered core: white-hot square, yellow ring, orange halo ---
+    const whiteHot = this.add.rectangle(px, py, 16, 16, 0xfff9d0, 1).setDepth(28);
     this.tweens.add({
-      targets: flash,
-      scale: 3,
-      alpha: 0,
-      duration: 280,
-      ease: 'Quad.easeOut',
-      onComplete: () => flash.destroy(),
+      targets: whiteHot,
+      scaleX: 2.4, scaleY: 2.4, alpha: 0,
+      duration: 320, ease: 'Quad.easeOut',
+      onComplete: () => whiteHot.destroy(),
+    });
+    const yellow = this.add.circle(px, py, 12, 0xffd233, 1).setDepth(27);
+    this.tweens.add({
+      targets: yellow,
+      scale: 3.2, alpha: 0,
+      duration: 440, ease: 'Quad.easeOut',
+      onComplete: () => yellow.destroy(),
+    });
+    const orange = this.add.circle(px, py, 9, 0xff7722, 0.9).setDepth(26);
+    this.tweens.add({
+      targets: orange,
+      scale: 4.2, alpha: 0,
+      duration: 540, ease: 'Quad.easeOut',
+      onComplete: () => orange.destroy(),
     });
 
-    // Hot core
-    const core = this.add.circle(px, py, 6, 0xff8c1a, 1).setDepth(26);
-    this.tweens.add({
-      targets: core,
-      scale: 2.2,
-      alpha: 0,
-      duration: 220,
-      onComplete: () => core.destroy(),
-    });
-
-    // Debris chunks flung outward
-    const DEBRIS_COLORS = [0xffcc33, 0xff7722, 0xaa4400, 0x7a5a3a];
-    for (let i = 0; i < 14; i++) {
+    // --- Golden fire flecks: small bright cubes near the center ---
+    const FIRE = [0xfff2a8, 0xffe066, 0xffb030, 0xff8819];
+    for (let i = 0; i < 22; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const dist = 18 + Math.random() * 24;
-      const color = DEBRIS_COLORS[Math.floor(Math.random() * DEBRIS_COLORS.length)];
-      const size = 3 + Math.floor(Math.random() * 3);
-      const bit = this.add.rectangle(px, py, size, size, color).setDepth(25);
+      const dist = 14 + Math.random() * 30;
+      const color = FIRE[Math.floor(Math.random() * FIRE.length)];
+      const size = 2 + Math.floor(Math.random() * 3);
+      const fleck = this.add.rectangle(px, py, size, size, color).setDepth(27);
       this.tweens.add({
-        targets: bit,
+        targets: fleck,
         x: px + Math.cos(angle) * dist,
         y: py + Math.sin(angle) * dist,
         alpha: 0,
-        angle: (Math.random() * 360) - 180,
-        duration: 360 + Math.random() * 200,
+        duration: 380 + Math.random() * 240,
         ease: 'Quad.easeOut',
-        onComplete: () => bit.destroy(),
+        onComplete: () => fleck.destroy(),
       });
     }
 
-    // Smoke puffs
-    for (let i = 0; i < 6; i++) {
+    // --- Brown/amber debris cubes flung outward with rotation ---
+    const DEBRIS = [0x8a5a2a, 0xa6743d, 0x5d3a18, 0xc99560, 0x6e4622];
+    for (let i = 0; i < 12; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const dist = 8 + Math.random() * 14;
-      const puff = this.add.circle(px, py, 5, 0x888888, 0.7).setDepth(24);
+      const dist = 30 + Math.random() * 42;
+      const color = DEBRIS[Math.floor(Math.random() * DEBRIS.length)];
+      const size = 4 + Math.floor(Math.random() * 3);
+      const chunk = this.add.rectangle(px, py, size, size, color).setDepth(26);
+      this.tweens.add({
+        targets: chunk,
+        x: px + Math.cos(angle) * dist,
+        y: py + Math.sin(angle) * dist,
+        angle: (Math.random() * 540) - 270,
+        duration: 520 + Math.random() * 280,
+        ease: 'Quad.easeOut',
+        onComplete: () => {
+          this.tweens.add({
+            targets: chunk, alpha: 0, duration: 180,
+            onComplete: () => chunk.destroy(),
+          });
+        },
+      });
+    }
+
+    // --- Grey/cream smoke clouds, biased upward and outward ---
+    const SMOKE = [0xe0dccf, 0xc5bfae, 0xa9a294, 0x807a6a];
+    for (let i = 0; i < 14; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 12 + Math.random() * 28;
+      const color = SMOKE[Math.floor(Math.random() * SMOKE.length)];
+      const size = 5 + Math.floor(Math.random() * 4);
+      const puff = this.add.rectangle(px, py, size, size, color, 0.85).setDepth(25);
       this.tweens.add({
         targets: puff,
-        x: px + Math.cos(angle) * dist,
-        y: py + Math.sin(angle) * dist - 6,
-        scale: 2,
+        x: px + Math.cos(angle) * dist + (Math.random() - 0.5) * 8,
+        y: py + Math.sin(angle) * dist - 16 - Math.random() * 12, // drift up
+        scaleX: 1.7, scaleY: 1.7,
         alpha: 0,
-        duration: 500 + Math.random() * 200,
+        duration: 720 + Math.random() * 240,
         ease: 'Quad.easeOut',
         onComplete: () => puff.destroy(),
       });
     }
 
-    this.cameras.main.shake(180, 0.008);
+    this.cameras.main.shake(220, 0.01);
   }
 
   /**
