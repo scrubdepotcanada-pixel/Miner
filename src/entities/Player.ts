@@ -8,7 +8,8 @@ export type Direction = 'left' | 'right' | 'up' | 'down';
 export interface PlayerEvents {
   onDig: (col: number, row: number) => void;
   onGemCollect: (col: number, row: number, points: number) => void;
-  onBagScoop: (col: number, row: number) => void;
+  /** Returns true if the bag was collected (player may enter the tile). */
+  onBagTouch: (col: number, row: number) => boolean;
   onDeath: () => void;
   onCheckLevelComplete: () => void;
 }
@@ -94,11 +95,12 @@ export class Player {
         this.col = nc;
         this.row = nr;
       } else if (tile === TileType.BAG) {
-        // Scoop a stationary bag for money — walk into it and collect.
-        this.map.set(nc, nr, TileType.EMPTY);
-        this.col = nc;
-        this.row = nr;
-        this.events.onBagScoop(nc, nr);
+        // Only fallen bags can be scooped; resting bags block movement.
+        // GameScene mutates the tile when it's collected.
+        if (this.events.onBagTouch(nc, nr)) {
+          this.col = nc;
+          this.row = nr;
+        }
         break; // one bag per move; can't drill past it
       } else {
         break;

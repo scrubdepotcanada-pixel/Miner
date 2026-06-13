@@ -9,7 +9,7 @@ import { ScoreManager } from '../systems/ScoreManager';
 import { LevelManager, LevelConfig } from '../levels/LevelManager';
 import {
   TILE_SIZE, GRID_COLS, GRID_ROWS,
-  COLOR_DIRT, COLOR_EMPTY, COLOR_GEM, COLOR_ROCK, COLOR_BORDER, COLOR_BAG,
+  COLOR_DIRT, COLOR_EMPTY, COLOR_ROCK, COLOR_BORDER, COLOR_BAG,
   SCORE_BAG_CRUSH, SCORE_MONEY_BAG, STARTING_LIVES,
 } from '../constants';
 
@@ -55,6 +55,11 @@ export class GameScene extends Phaser.Scene {
   private bagLabels: Map<string, Phaser.GameObjects.Text> = new Map();
   // Active jiggle animations, keyed by "col,row"
   private jiggleData: Map<string, { tween: Phaser.Tweens.Tween; timer: Phaser.Time.TimerEvent }> = new Map();
+  // Bags that have fallen and may now be scooped for money, keyed by "col,row".
+  // Bags resting in their original spots are obstacles until undermined.
+  private collectibleBags: Set<string> = new Set();
+  // Diamond gem sprites overlaid on GEM tiles, keyed by "col,row"
+  private gemSprites: Map<string, Phaser.GameObjects.Image> = new Map();
 
   constructor() {
     super({ key: 'GameScene' });
@@ -71,6 +76,8 @@ export class GameScene extends Phaser.Scene {
     this.fallingBags = [];
     this.bagLabels = new Map();
     this.jiggleData = new Map();
+    this.collectibleBags = new Set();
+    this.gemSprites = new Map();
     this.enemies = [];
     this.tileSprites = [];
   }
@@ -107,7 +114,7 @@ export class GameScene extends Phaser.Scene {
 
         // Gem inner detail
         if (type === TileType.GEM) {
-          this.add.rectangle(px, py, 12, 12, 0xFFFFFF, 0.3).setDepth(1);
+          this.syncGemSprite(c, r);
         }
         // Bag label (tracked so it can move/clear as bags fall or are scooped)
         if (type === TileType.BAG) {
@@ -147,7 +154,7 @@ export class GameScene extends Phaser.Scene {
     this.player = new Player(this, startCol, startRow, this.tileMap, {
       onDig: (c, r) => this.onDig(c, r),
       onGemCollect: (c, r, pts) => this.onGemCollect(c, r, pts),
-      onBagScoop: (c, r) => this.onBagScoop(c, r),
+      onBagTouch: (c, r) => this.onBagTouch(c, r),
       onDeath: () => this.onPlayerDeath(),
       onCheckLevelComplete: () => this.checkLevelComplete(),
     });
@@ -238,6 +245,24 @@ export class GameScene extends Phaser.Scene {
     ts.type = type;
     ts.rect.setFillStyle(tileColor(type));
     this.syncBagLabel(col, row);
+    this.syncGemSprite(col, row);
+  }
+
+  /** Ensure a diamond sprite is shown on GEM tiles and removed otherwise. */
+  private syncGemSprite(col: number, row: number): void {
+    const key = `${col},${row}`;
+    const isGem = this.tileMap.get(col, row) === TileType.GEM;
+    const existing = this.gemSprites.get(key);
+    if (isGem && !existing) {
+      const px = col * TILE_SIZE + TILE_SIZE / 2;
+      const py = row * TILE_SIZE + TILE_SIZE / 2;
+      const gem = this.add.image(px, py, 'gem').setDepth(3);
+      gem.setDisplaySize(TILE_SIZE - 8, TILE_SIZE - 8);
+      this.gemSprites.set(key, gem);
+    } else if (!isGem && existing) {
+      existing.destroy();
+      this.gemSprites.delete(key);
+    }
   }
 
   /** Ensure the '$' label presence at a tile matches whether it holds a BAG. */
@@ -310,6 +335,7 @@ export class GameScene extends Phaser.Scene {
   private beginFall(col: number, row: number): void {
     if (this.tileMap.get(col, row) !== TileType.BAG) return; // scooped/changed meanwhile
 
+    this.collectibleBags.delete(`${col},${row}`); // leaving this tile
     this.tileMap.set(col, row, TileType.EMPTY);
     this.refreshTile(col, row); // clears the gold tile + its label
 
@@ -343,8 +369,9 @@ export class GameScene extends Phaser.Scene {
         bag.label.setPosition(px - 5, py - 7);
         this.crushAt(bag.col, bag.row);
       } else {
-        // Settle: become a stationary BAG tile that can be scooped for money.
+        // Settle: become a stationary bag that can now be scooped for money.
         this.tileMap.set(bag.col, bag.row, TileType.BAG);
+        this.collectibleBags.add(`${bag.col},${bag.row}`);
         this.refreshTile(bag.col, bag.row);
         bag.rect.destroy();
         bag.label.destroy();
@@ -375,10 +402,18 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Player walked into a stationary bag — scoop it for money. */
-  private onBagScoop(col: number, row: number): void {
-    this.stopJiggle(col, row);     // in case it was mid-jiggle
-    this.refreshTile(col, row);    // tile is already EMPTY; clears gold + label
+  /**
+   * Player tried to walk into a bag. Only bags that have already jiggled
+   * and fallen are collectible; resting bags are solid obstacles.
+   * Returns true if the bag was scooped (player may enter the tile).
+   */
+  private onBagTouch(col: number, row: number): boolean {
+    const key = `${col},${row}`;
+    if (!this.collectibleBags.has(key)) return false; // hasn't fallen yet — blocked
+
+    this.collectibleBags.delete(key);
+    this.tileMap.set(col, row, TileType.EMPTY);
+    this.refreshTile(col, row); // clears gold + label
     this.scoreManager.add(SCORE_MONEY_BAG);
     this.updateHUD();
 
@@ -392,6 +427,7 @@ export class GameScene extends Phaser.Scene {
       targets: popup, y: py - 24, alpha: 0, duration: 600,
       onComplete: () => popup.destroy(),
     });
+    return true;
   }
 
   private checkEnemyCollisions(): void {
@@ -457,7 +493,7 @@ export class GameScene extends Phaser.Scene {
 function tileColor(type: TileType): number {
   switch (type) {
     case TileType.DIRT:    return COLOR_DIRT;
-    case TileType.GEM:     return COLOR_GEM;
+    case TileType.GEM:     return 0x0e1a18; // dark pocket behind the diamond sprite
     case TileType.ROCK:    return COLOR_ROCK;
     case TileType.BORDER:  return COLOR_BORDER;
     case TileType.BAG:     return COLOR_BAG;

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { createDiggerTexture } from '../sprites/DiggerSprite';
+import { createGemTexture } from '../sprites/GemSprite';
 
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -26,8 +27,9 @@ export class BootScene extends Phaser.Scene {
   }
 
   create(): void {
-    // Generate the player digger sprite as an in-engine texture.
+    // Generate sprites as in-engine textures.
     createDiggerTexture(this, 'digger');
+    createGemTexture(this, 'gem');
     this.scene.start('TitleScene');
   }
 }
