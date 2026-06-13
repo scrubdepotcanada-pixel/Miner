@@ -1,0 +1,369 @@
+import Phaser from 'phaser';
+import { TileMap } from '../grid/TileMap';
+import { TileType } from '../grid/TileTypes';
+import { Player } from '../entities/Player';
+import { ChaserEnemy } from '../entities/ChaserEnemy';
+import { PatrolEnemy } from '../entities/PatrolEnemy';
+import { Enemy } from '../entities/Enemy';
+import { ScoreManager } from '../systems/ScoreManager';
+import { LevelManager, LevelConfig } from '../levels/LevelManager';
+import {
+  TILE_SIZE, GRID_COLS, GRID_ROWS,
+  COLOR_DIRT, COLOR_EMPTY, COLOR_GEM, COLOR_ROCK, COLOR_BORDER, COLOR_BAG,
+  SCORE_BAG_CRUSH, SCORE_MONEY_BAG, STARTING_LIVES,
+} from '../constants';
+
+interface TileSprite {
+  rect: Phaser.GameObjects.Rectangle;
+  type: TileType;
+}
+
+export class GameScene extends Phaser.Scene {
+  private tileMap!: TileMap;
+  private tileSprites: TileSprite[][] = [];
+  private player!: Player;
+  private enemies: Enemy[] = [];
+  private scoreManager!: ScoreManager;
+  private levelManager!: LevelManager;
+  private levelConfig!: LevelConfig;
+  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
+  private escKey!: Phaser.Input.Keyboard.Key;
+
+  // HUD elements (inline for Session 1, moved to HUDScene in Session 3)
+  private scoreText!: Phaser.GameObjects.Text;
+  private livesText!: Phaser.GameObjects.Text;
+  private gemsText!: Phaser.GameObjects.Text;
+  private levelLabel!: Phaser.GameObjects.Text;
+
+  private totalGems = 0;
+  private collectedGems = 0;
+  private playerDeathHandled = false;
+  private levelCompleted = false;
+
+  // Falling bag tracking
+  private fallingBags: Array<{ col: number; row: number; timer: number }> = [];
+  private readonly FALL_STEP_MS = 120;
+
+  constructor() {
+    super({ key: 'GameScene' });
+  }
+
+  init(data: { world?: number; level?: number }): void {
+    this.levelManager = new LevelManager();
+    const world = data.world ?? 1;
+    const level = data.level ?? 1;
+    this.levelConfig = this.levelManager.getLevel(world, level);
+    this.scoreManager = new ScoreManager(STARTING_LIVES, () => this.showExtraLife());
+    this.playerDeathHandled = false;
+    this.levelCompleted = false;
+    this.fallingBags = [];
+    this.enemies = [];
+    this.tileSprites = [];
+  }
+
+  create(): void {
+    this.cameras.main.setBackgroundColor('#111111');
+    this.tileMap = new TileMap(GRID_COLS, GRID_ROWS);
+    this.tileMap.loadFromArray(this.levelConfig.gridData);
+
+    this.buildTileSprites();
+    this.countGems();
+    this.spawnPlayer();
+    this.spawnEnemies();
+    this.buildHUD();
+
+    this.cursors = this.input.keyboard!.createCursorKeys();
+    this.escKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+
+    // Prevent arrow key scrolling
+    this.input.keyboard!.disableGlobalCapture();
+  }
+
+  private buildTileSprites(): void {
+    for (let r = 0; r < GRID_ROWS; r++) {
+      this.tileSprites[r] = [];
+      for (let c = 0; c < GRID_COLS; c++) {
+        const type = this.tileMap.get(c, r);
+        const color = tileColor(type);
+        const px = c * TILE_SIZE + TILE_SIZE / 2;
+        const py = r * TILE_SIZE + TILE_SIZE / 2;
+        const rect = this.add.rectangle(px, py, TILE_SIZE, TILE_SIZE, color);
+        rect.setDepth(0);
+        this.tileSprites[r][c] = { rect, type };
+
+        // Gem inner detail
+        if (type === TileType.GEM) {
+          this.add.rectangle(px, py, 12, 12, 0xFFFFFF, 0.3).setDepth(1);
+        }
+        // Bag label
+        if (type === TileType.BAG) {
+          this.add.text(px - 5, py - 7, '$', { fontSize: '14px', color: '#000', fontFamily: 'monospace' }).setDepth(1);
+        }
+        // Grid lines for DIRT
+        if (type === TileType.DIRT) {
+          this.add.rectangle(px, py, TILE_SIZE - 1, TILE_SIZE - 1, 0x000000, 0).setStrokeStyle(0.5, 0x7A4E2C, 0.3).setDepth(1);
+        }
+      }
+    }
+  }
+
+  private countGems(): void {
+    this.totalGems = 0;
+    this.collectedGems = 0;
+    for (let r = 0; r < GRID_ROWS; r++)
+      for (let c = 0; c < GRID_COLS; c++)
+        if (this.tileMap.get(c, r) === TileType.GEM) this.totalGems++;
+  }
+
+  private spawnPlayer(): void {
+    // Find first SPAWN tile or default to (1,1)
+    let startCol = 1, startRow = 1;
+    outer: for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        if (this.tileMap.get(c, r) === TileType.SPAWN) {
+          startCol = c;
+          startRow = r;
+          this.tileMap.set(c, r, TileType.EMPTY);
+          this.refreshTile(c, r);
+          break outer;
+        }
+      }
+    }
+
+    this.player = new Player(this, startCol, startRow, this.tileMap, {
+      onDig: (c, r) => this.onDig(c, r),
+      onGemCollect: (c, r, pts) => this.onGemCollect(c, r, pts),
+      onDeath: () => this.onPlayerDeath(),
+      onCheckLevelComplete: () => this.checkLevelComplete(),
+    });
+  }
+
+  private spawnEnemies(): void {
+    const spawnTiles: Array<{ col: number; row: number }> = [];
+    for (let r = 0; r < GRID_ROWS; r++)
+      for (let c = 0; c < GRID_COLS; c++)
+        if (this.tileMap.get(c, r) === TileType.SPAWN) spawnTiles.push({ col: c, row: r });
+
+    for (let i = 0; i < this.levelConfig.enemyCount && i < spawnTiles.length; i++) {
+      const spawn = spawnTiles[i];
+      this.tileMap.set(spawn.col, spawn.row, TileType.EMPTY);
+      this.refreshTile(spawn.col, spawn.row);
+      const enemy = i % 2 === 0
+        ? new ChaserEnemy(this, spawn.col, spawn.row, this.tileMap)
+        : new PatrolEnemy(this, spawn.col, spawn.row, this.tileMap, spawn.col < 10 ? 1 : -1, 0);
+      this.enemies.push(enemy);
+    }
+  }
+
+  private buildHUD(): void {
+    const hudBg = this.add.rectangle(GRID_COLS * TILE_SIZE / 2, 8, GRID_COLS * TILE_SIZE, 20, 0x000000, 0.7);
+    hudBg.setDepth(50);
+
+    this.scoreText = this.add.text(8, 2, 'SCORE: 0', { fontSize: '13px', color: '#FFdd00', fontFamily: 'monospace' }).setDepth(51);
+    this.livesText = this.add.text(180, 2, 'LIVES: 3', { fontSize: '13px', color: '#FF4444', fontFamily: 'monospace' }).setDepth(51);
+    this.gemsText  = this.add.text(340, 2, 'GEMS: 0/0', { fontSize: '13px', color: '#00DD66', fontFamily: 'monospace' }).setDepth(51);
+    this.levelLabel = this.add.text(500, 2, `W${this.levelConfig.world}-${this.levelConfig.level}`, { fontSize: '13px', color: '#AAAAAA', fontFamily: 'monospace' }).setDepth(51);
+    void this.levelLabel; // referenced via scene HUD, not updated dynamically
+
+    this.updateHUD();
+  }
+
+  private updateHUD(): void {
+    this.scoreText.setText(`SCORE: ${this.scoreManager.getScore()}`);
+    this.livesText.setText(`LIVES: ${this.scoreManager.getLives()}`);
+    this.gemsText.setText(`GEMS: ${this.collectedGems}/${this.totalGems}`);
+  }
+
+  update(_time: number, delta: number): void {
+    if (this.levelCompleted || this.playerDeathHandled) return;
+
+    if (Phaser.Input.Keyboard.JustDown(this.escKey)) {
+      this.scene.pause();
+      this.scene.launch('PauseScene');
+      return;
+    }
+
+    this.player.update(delta, this.cursors);
+
+    for (const e of this.enemies) {
+      if (e.alive) e.update(delta, this.player.col, this.player.row);
+    }
+
+    this.stepFallingBags(delta);
+    this.checkEnemyCollisions();
+  }
+
+  private onDig(col: number, row: number): void {
+    this.refreshTile(col, row);
+    // Check if any bag above just lost support
+    this.checkBagGravity(col, row);
+  }
+
+  private onGemCollect(col: number, row: number, points: number): void {
+    this.scoreManager.add(points);
+    this.collectedGems++;
+    this.refreshTile(col, row);
+    this.updateHUD();
+
+    // Sparkle effect
+    const px = col * TILE_SIZE + TILE_SIZE / 2;
+    const py = row * TILE_SIZE + TILE_SIZE / 2;
+    this.tweens.add({
+      targets: this.add.circle(px, py, 8, 0xFFFFFF, 0.8).setDepth(20),
+      scaleX: 3, scaleY: 3, alpha: 0,
+      duration: 250,
+      onComplete: (_, targets) => (targets as Phaser.GameObjects.Arc[]).forEach(t => t.destroy()),
+    });
+  }
+
+  private refreshTile(col: number, row: number): void {
+    const type = this.tileMap.get(col, row);
+    const ts = this.tileSprites[row]?.[col];
+    if (!ts) return;
+    ts.type = type;
+    ts.rect.setFillStyle(tileColor(type));
+  }
+
+  private checkBagGravity(col: number, row: number): void {
+    // Check if the tile directly above is a BAG
+    const aboveRow = row - 1;
+    if (aboveRow >= 0 && this.tileMap.get(col, aboveRow) === TileType.BAG) {
+      this.tileMap.set(col, aboveRow, TileType.EMPTY);
+      this.refreshTile(col, aboveRow);
+      this.fallingBags.push({ col, row: aboveRow, timer: 0 });
+    }
+  }
+
+  private stepFallingBags(delta: number): void {
+    const toRemove: number[] = [];
+
+    for (let i = 0; i < this.fallingBags.length; i++) {
+      const bag = this.fallingBags[i];
+      bag.timer += delta;
+      if (bag.timer < this.FALL_STEP_MS) continue;
+      bag.timer = 0;
+
+      const nextRow = bag.row + 1;
+      const below = this.tileMap.get(bag.col, nextRow);
+
+      // Animate: show bag at current position
+      this.refreshTile(bag.col, bag.row);
+
+      if (below === TileType.EMPTY || below === TileType.SPAWN) {
+        bag.row = nextRow;
+        // Draw bag sprite temporarily
+        this.tileMap.set(bag.col, bag.row, TileType.BAG);
+        this.refreshTile(bag.col, bag.row);
+        this.tileMap.set(bag.col, bag.row, TileType.EMPTY); // logically empty while falling
+      } else {
+        // Settled
+        this.tileMap.set(bag.col, bag.row, TileType.BAG);
+        this.refreshTile(bag.col, bag.row);
+
+        // Check if player is here
+        if (this.player.col === bag.col && this.player.row === bag.row) {
+          this.player.kill();
+        }
+
+        // Check if any enemy is here
+        for (const e of this.enemies) {
+          if (e.alive && e.col === bag.col && e.row === bag.row) {
+            e.kill();
+            this.scoreManager.add(SCORE_BAG_CRUSH);
+            this.updateHUD();
+          }
+        }
+
+        // Chain: check bag above the just-settled position
+        this.checkBagGravity(bag.col, bag.row);
+        // Collect bag if player walks into it — handled via player movement
+        // Award bag value
+        this.scoreManager.add(SCORE_MONEY_BAG);
+        this.updateHUD();
+
+        toRemove.push(i);
+
+        // Screen shake
+        this.cameras.main.shake(120, 0.005);
+      }
+    }
+
+    for (let i = toRemove.length - 1; i >= 0; i--) {
+      this.fallingBags.splice(toRemove[i], 1);
+    }
+  }
+
+  private checkEnemyCollisions(): void {
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      if (e.col === this.player.col && e.row === this.player.row) {
+        this.player.kill();
+        return;
+      }
+    }
+  }
+
+  private onPlayerDeath(): void {
+    if (this.playerDeathHandled) return;
+    this.playerDeathHandled = true;
+
+    this.cameras.main.shake(300, 0.02);
+
+    this.time.delayedCall(600, () => {
+      const hasLives = this.scoreManager.loseLife();
+      if (hasLives && this.scoreManager.getLives() >= 0) {
+        // Respawn
+        this.playerDeathHandled = false;
+        this.player.respawn(1, 1);
+      } else {
+        this.scene.start('GameOverScene', {
+          score: this.scoreManager.getScore(),
+          world: this.levelConfig.world,
+          level: this.levelConfig.level,
+        });
+      }
+    });
+  }
+
+  private checkLevelComplete(): void {
+    if (this.collectedGems >= this.totalGems && !this.levelCompleted) {
+      this.levelCompleted = true;
+      this.levelManager.completeLevel(this.levelConfig.world, this.levelConfig.level, this.scoreManager.getScore());
+      this.time.delayedCall(500, () => {
+        this.scene.start('LevelCompleteScene', {
+          score: this.scoreManager.getScore(),
+          world: this.levelConfig.world,
+          level: this.levelConfig.level,
+          gemsCollected: this.collectedGems,
+          totalGems: this.totalGems,
+        });
+      });
+    }
+  }
+
+  private showExtraLife(): void {
+    const text = this.add.text(TILE_SIZE * GRID_COLS / 2, TILE_SIZE * GRID_ROWS / 2, '+1 UP!', {
+      fontSize: '28px', color: '#FF88FF', fontFamily: 'monospace',
+      stroke: '#000', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(60);
+    this.tweens.add({
+      targets: text, y: text.y - 60, alpha: 0, duration: 1500,
+      onComplete: () => text.destroy(),
+    });
+  }
+}
+
+function tileColor(type: TileType): number {
+  switch (type) {
+    case TileType.DIRT:    return COLOR_DIRT;
+    case TileType.GEM:     return COLOR_GEM;
+    case TileType.ROCK:    return COLOR_ROCK;
+    case TileType.BORDER:  return COLOR_BORDER;
+    case TileType.BAG:     return COLOR_BAG;
+    case TileType.HAZARD:  return 0xFF4400;
+    case TileType.SPAWN:   return 0x224422;
+    case TileType.ARTIFACT: return 0xFF88FF;
+    case TileType.EMPTY:
+    default:               return COLOR_EMPTY;
+  }
+}
