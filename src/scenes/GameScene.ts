@@ -39,6 +39,10 @@ export class GameScene extends Phaser.Scene {
   private collectedGems = 0;
   private playerDeathHandled = false;
   private levelCompleted = false;
+  // Enemies stay still until the digger takes its first step.
+  private playerHasMoved = false;
+  private playerSpawnCol = 0;
+  private playerSpawnRow = 0;
 
   // Bags in flight (detached from the tile grid while falling)
   private fallingBags: Array<{
@@ -73,6 +77,7 @@ export class GameScene extends Phaser.Scene {
     this.scoreManager = new ScoreManager(STARTING_LIVES, () => this.showExtraLife());
     this.playerDeathHandled = false;
     this.levelCompleted = false;
+    this.playerHasMoved = false;
     this.fallingBags = [];
     this.bagLabels = new Map();
     this.jiggleData = new Map();
@@ -244,6 +249,8 @@ export class GameScene extends Phaser.Scene {
       onDeath: () => this.onPlayerDeath(),
       onCheckLevelComplete: () => this.checkLevelComplete(),
     });
+    this.playerSpawnCol = this.player.col;
+    this.playerSpawnRow = this.player.row;
   }
 
   private spawnEnemies(): void {
@@ -293,8 +300,16 @@ export class GameScene extends Phaser.Scene {
 
     this.player.update(delta, this.cursors);
 
-    for (const e of this.enemies) {
-      if (e.alive) e.update(delta, this.player.col, this.player.row);
+    // Enemies hold position until the digger takes its first real step.
+    if (!this.playerHasMoved &&
+        (this.player.col !== this.playerSpawnCol || this.player.row !== this.playerSpawnRow)) {
+      this.playerHasMoved = true;
+    }
+
+    if (this.playerHasMoved) {
+      for (const e of this.enemies) {
+        if (e.alive) e.update(delta, this.player.col, this.player.row);
+      }
     }
 
     this.stepFallingBags(delta);
@@ -606,9 +621,12 @@ export class GameScene extends Phaser.Scene {
     this.time.delayedCall(600, () => {
       const hasLives = this.scoreManager.loseLife();
       if (hasLives && this.scoreManager.getLives() >= 0) {
-        // Respawn
+        // Respawn — re-freeze the enemies until the digger moves again.
         this.playerDeathHandled = false;
         this.player.respawn(1, 1);
+        this.playerSpawnCol = this.player.col;
+        this.playerSpawnRow = this.player.row;
+        this.playerHasMoved = false;
       } else {
         this.scene.start('GameOverScene', {
           score: this.scoreManager.getScore(),
