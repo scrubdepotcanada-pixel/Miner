@@ -138,12 +138,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Pre-dig a starter tunnel network so enemies can begin pathfinding to the
-   * digger immediately instead of being stuck in a dirt corner. Carves:
-   *   1) a horizontal corridor along the spawn row connecting all spawns,
-   *   2) a vertical shaft through a mid column for chase variety.
-   * Only DIRT becomes EMPTY — rocks, gems, bags, and borders are preserved,
-   * and a tile won't be carved if removing it would unsupport a resting bag.
+   * Pre-dig a random starter tunnel network rooted at every enemy spawn so
+   * the bad guys can move around immediately. The walker only carves DIRT —
+   * money bags, gems, rocks, and borders are obstacles it routes around,
+   * never over. A tile is also skipped if removing it would pull the floor
+   * out from under a resting bag.
+   *
+   * The first SPAWN tile in scan order is treated as the player's; every
+   * other SPAWN seeds an independent walk so each enemy gets its own
+   * connected pocket of tunnels.
    */
   private carvePreDugTunnels(): void {
     const spawns: Array<{ col: number; row: number }> = [];
@@ -153,25 +156,70 @@ export class GameScene extends Phaser.Scene {
           spawns.push({ col: c, row: r });
     if (spawns.length === 0) return;
 
-    // 1) Spawn-row corridor: clear dirt between leftmost and rightmost spawn.
-    if (spawns.length >= 2) {
-      const sorted = [...spawns].sort((a, b) => a.col - b.col);
-      const corridorRow = sorted[0].row;
-      const minCol = sorted[0].col;
-      const maxCol = sorted[sorted.length - 1].col;
-      for (let c = minCol + 1; c < maxCol; c++) this.carveTunnelTile(c, corridorRow);
-    }
+    // Player gets the first spawn; the rest are enemy roots.
+    const enemySpawns = spawns.length > 1 ? spawns.slice(1) : spawns;
 
-    // 2) Vertical mid-column shaft, leaving a couple of rows of headroom.
-    const midCol = Math.floor(GRID_COLS / 2);
-    for (let r = 3; r < GRID_ROWS - 3; r++) this.carveTunnelTile(midCol, r);
+    for (const root of enemySpawns) {
+      // Aim for ~25–45 carved tiles per enemy, randomised each level.
+      const target = 25 + Math.floor(Math.random() * 21);
+      this.randomWalkCarve(root.col, root.row, target);
+    }
   }
 
-  private carveTunnelTile(col: number, row: number): void {
-    if (this.tileMap.get(col, row) !== TileType.DIRT) return;
-    // Don't pull the floor out from under a resting bag at load time.
-    if (this.tileMap.get(col, row - 1) === TileType.BAG) return;
+  /** Drunkard's-walk carve: grows a connected tunnel pocket from (col,row). */
+  private randomWalkCarve(startCol: number, startRow: number, target: number): void {
+    const DIRS: Array<[number, number]> = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    // Frontier = positions adjacent to dirt we might still carve from. The
+    // spawn itself becomes EMPTY when the enemy spawns, so we seed with it.
+    const frontier: Array<{ col: number; row: number }> = [{ col: startCol, row: startRow }];
+    let carved = 0;
+
+    while (frontier.length > 0 && carved < target) {
+      // 70% bias to the most recently carved tile — produces winding tunnels
+      // with occasional branches when we pick from older spots.
+      const idx = Math.random() < 0.7
+        ? frontier.length - 1
+        : Math.floor(Math.random() * frontier.length);
+      const pos = frontier[idx];
+
+      const dirs = this.shuffled(DIRS);
+      let stepped = false;
+      for (const [dc, dr] of dirs) {
+        const nc = pos.col + dc;
+        const nr = pos.row + dr;
+        if (this.tryCarveTunnel(nc, nr)) {
+          frontier.push({ col: nc, row: nr });
+          carved++;
+          stepped = true;
+          break;
+        }
+      }
+      if (!stepped) {
+        // No diggable neighbour from this tile — retire it from the frontier.
+        frontier.splice(idx, 1);
+      }
+    }
+  }
+
+  /**
+   * Carve (col,row) to EMPTY iff it's DIRT and doing so won't drop a bag.
+   * Returns true on success. Bags, gems, rocks, borders, and already-empty
+   * tiles all fail — the walker treats them as walls and routes around them.
+   */
+  private tryCarveTunnel(col: number, row: number): boolean {
+    if (this.tileMap.get(col, row) !== TileType.DIRT) return false;
+    if (this.tileMap.get(col, row - 1) === TileType.BAG) return false;
     this.tileMap.set(col, row, TileType.EMPTY);
+    return true;
+  }
+
+  private shuffled<T>(arr: ReadonlyArray<T>): T[] {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
   }
 
   private spawnPlayer(): void {
@@ -436,8 +484,79 @@ export class GameScene extends Phaser.Scene {
         e.kill();
         this.scoreManager.add(SCORE_BAG_CRUSH);
         this.updateHUD();
+        this.explodeAt(col, row);
       }
     }
+  }
+
+  /**
+   * Procedural explosion VFX at a tile — bright flash, debris bits, smoke
+   * cloud. Placeholder until the proper spritesheet is wired in; intended
+   * for enemies crushed by bags (and reusable for the digger's death).
+   */
+  private explodeAt(col: number, row: number): void {
+    const px = col * TILE_SIZE + TILE_SIZE / 2;
+    const py = row * TILE_SIZE + TILE_SIZE / 2;
+
+    // Central flash
+    const flash = this.add.circle(px, py, 10, 0xfff2a8, 1).setDepth(25);
+    this.tweens.add({
+      targets: flash,
+      scale: 3,
+      alpha: 0,
+      duration: 280,
+      ease: 'Quad.easeOut',
+      onComplete: () => flash.destroy(),
+    });
+
+    // Hot core
+    const core = this.add.circle(px, py, 6, 0xff8c1a, 1).setDepth(26);
+    this.tweens.add({
+      targets: core,
+      scale: 2.2,
+      alpha: 0,
+      duration: 220,
+      onComplete: () => core.destroy(),
+    });
+
+    // Debris chunks flung outward
+    const DEBRIS_COLORS = [0xffcc33, 0xff7722, 0xaa4400, 0x7a5a3a];
+    for (let i = 0; i < 14; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 18 + Math.random() * 24;
+      const color = DEBRIS_COLORS[Math.floor(Math.random() * DEBRIS_COLORS.length)];
+      const size = 3 + Math.floor(Math.random() * 3);
+      const bit = this.add.rectangle(px, py, size, size, color).setDepth(25);
+      this.tweens.add({
+        targets: bit,
+        x: px + Math.cos(angle) * dist,
+        y: py + Math.sin(angle) * dist,
+        alpha: 0,
+        angle: (Math.random() * 360) - 180,
+        duration: 360 + Math.random() * 200,
+        ease: 'Quad.easeOut',
+        onComplete: () => bit.destroy(),
+      });
+    }
+
+    // Smoke puffs
+    for (let i = 0; i < 6; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 8 + Math.random() * 14;
+      const puff = this.add.circle(px, py, 5, 0x888888, 0.7).setDepth(24);
+      this.tweens.add({
+        targets: puff,
+        x: px + Math.cos(angle) * dist,
+        y: py + Math.sin(angle) * dist - 6,
+        scale: 2,
+        alpha: 0,
+        duration: 500 + Math.random() * 200,
+        ease: 'Quad.easeOut',
+        onComplete: () => puff.destroy(),
+      });
+    }
+
+    this.cameras.main.shake(180, 0.008);
   }
 
   /**
