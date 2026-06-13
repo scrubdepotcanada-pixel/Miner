@@ -15,8 +15,9 @@ export interface PlayerEvents {
 export class Player {
   col: number;
   row: number;
-  private sprite: Phaser.GameObjects.Rectangle;
+  private sprite: Phaser.GameObjects.Image;
   private map: TileMap;
+  private facing: 1 | -1 = 1; // 1 = right (default art), -1 = left
   private events: PlayerEvents;
   private moveTimer = 0;
   private moveInterval: number;
@@ -35,11 +36,17 @@ export class Player {
 
     const px = col * TILE_SIZE + TILE_SIZE / 2;
     const py = row * TILE_SIZE + TILE_SIZE / 2;
-    this.sprite = scene.add.rectangle(px, py, TILE_SIZE - 4, TILE_SIZE - 4, COLOR_PLAYER);
-    this.sprite.setDepth(10);
 
-    // Hard hat indicator (small rect on top)
-    scene.add.rectangle(px, py - 10, TILE_SIZE - 12, 6, 0xFFAA00).setDepth(11);
+    if (scene.textures.exists('digger')) {
+      this.sprite = scene.add.image(px, py, 'digger');
+      // Fit the digger to roughly one tile tall; the drill overhangs slightly.
+      this.sprite.setDisplaySize(TILE_SIZE * 1.35, TILE_SIZE * 0.9);
+    } else {
+      // Fallback to a coloured block if the texture failed to generate.
+      const rect = scene.add.rectangle(px, py, TILE_SIZE - 4, TILE_SIZE - 4, COLOR_PLAYER);
+      this.sprite = rect as unknown as Phaser.GameObjects.Image;
+    }
+    this.sprite.setDepth(10);
   }
 
   setFrozen(frozen: boolean): void { this.frozen = frozen; }
@@ -54,7 +61,13 @@ export class Player {
     if (!this.alive || this.frozen) return;
 
     const [dc, dr] = dirToDelta(dir);
-    let steps = this.drillCharges > 0 ? 3 : 1;
+    const steps = this.drillCharges > 0 ? 3 : 1;
+
+    // Face the direction of horizontal travel (art faces right by default).
+    if (dc !== 0) {
+      this.facing = dc > 0 ? 1 : -1;
+      this.sprite.setFlipX(this.facing === -1);
+    }
 
     for (let i = 0; i < steps; i++) {
       const nc = this.col + dc;
@@ -107,7 +120,7 @@ export class Player {
       return; // absorbed
     }
     this.alive = false;
-    this.sprite.setFillStyle(0x880000);
+    this.sprite.setTint(0xff4444);
     this.events.onDeath();
   }
 
@@ -119,7 +132,9 @@ export class Player {
     this.drillCharges = 0;
     this.speedMultiplier = 1;
     this.moveInterval = MOVE_INTERVAL_MS;
-    this.sprite.setFillStyle(COLOR_PLAYER);
+    this.facing = 1;
+    this.sprite.clearTint();
+    this.sprite.setFlipX(false);
     this.updateSprite();
   }
 
